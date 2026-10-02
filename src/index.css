@@ -1,0 +1,33 @@
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: "Instrument Serif", serif;
+  --font-body: "Inter", sans-serif;
+
+  --background: 201 100% 13%;
+  --foreground: 0 0% 100%;
+
+  --muted: 0 0% 10%;
+  --muted-foreground: 240 4% 66%;
+
+  --primary: 0 0% 100%;
+  --primary-foreground: 0 0% 4%;
+
+  --secondary: 0 0% 10%;
+  --secondary-foreground: 0 0% 100%;
+
+  --destructive: 0 72% 60%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 0 0% 100% / 0.12;
+  --input: 0 0% 100% / 0.16;
+  --ring: 0 0% 100% / 0.5;
+}
+
+body {
+  @apply bg-background text-foreground font-body antialiased;
+}
