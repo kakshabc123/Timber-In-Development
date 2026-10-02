@@ -27,6 +27,12 @@ export default function Index() {
       </header>
       <main className="flex flex-1 flex-col items-center justify-center px-6 text-center">
         <h1 className="max-w-2xl font-display text-6xl leading-tight">Train for real interview pressure.</h1>
+        <Link
+          to={user ? "/dashboard" : "/signup"}
+          className="mt-8 rounded-full bg-primary px-7 py-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+        >
+          Begin journey
+        </Link>
       </main>
     </div>
   );
