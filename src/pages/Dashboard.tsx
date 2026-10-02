@@ -1,24 +1,25 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { useProfile } from "@/contexts/ProfileContext";
+import { experienceLabel, RESUME_BUCKET } from "@/lib/onboarding";
 import { supabase } from "@/lib/supabase";
-
-type Profile = { full_name: string | null };
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();
+  const { profile } = useProfile();
   const navigate = useNavigate();
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const [resumeUrl, setResumeUrl] = useState<string | null>(null);
+
+  const resumePath = profile?.resume_path ?? null;
 
   useEffect(() => {
-    if (!user) return;
-    supabase
-      .from("profiles")
-      .select("full_name")
-      .eq("id", user.id)
-      .maybeSingle<Profile>()
-      .then(({ data }) => setProfile(data));
-  }, [user]);
+    if (!resumePath) return;
+    supabase.storage
+      .from(RESUME_BUCKET)
+      .createSignedUrl(resumePath, 60 * 60)
+      .then(({ data }) => setResumeUrl(data?.signedUrl ?? null));
+  }, [resumePath]);
 
   async function handleSignOut() {
     await signOut();
@@ -42,6 +43,41 @@ export default function Dashboard() {
       <main className="mx-auto max-w-3xl px-6 py-16">
         <h1 className="font-display text-5xl">Hi, {displayName}</h1>
         <p className="mt-3 text-muted-foreground">Signed in as {user?.email}</p>
+
+        <section className="mt-12 rounded-2xl border border-border bg-secondary/30 p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs uppercase tracking-[0.25em] text-muted-foreground">Your training profile</h2>
+            <Link to="/onboarding" className="text-sm text-muted-foreground transition hover:text-foreground">
+              Edit
+            </Link>
+          </div>
+          <dl className="mt-6 grid gap-6 sm:grid-cols-3">
+            <div>
+              <dt className="text-xs text-muted-foreground">Target role</dt>
+              <dd className="mt-1 font-display text-2xl">{profile?.target_role ?? "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">Experience</dt>
+              <dd className="mt-1 font-display text-2xl">{experienceLabel(profile?.experience_level ?? null) ?? "—"}</dd>
+            </div>
+            <div className="min-w-0">
+              <dt className="text-xs text-muted-foreground">Resume</dt>
+              <dd className="mt-1 truncate text-sm">
+                {profile?.resume_filename ? (
+                  resumeUrl ? (
+                    <a href={resumeUrl} target="_blank" rel="noreferrer" className="underline underline-offset-4">
+                      {profile.resume_filename}
+                    </a>
+                  ) : (
+                    profile.resume_filename
+                  )
+                ) : (
+                  "—"
+                )}
+              </dd>
+            </div>
+          </dl>
+        </section>
       </main>
     </div>
   );
