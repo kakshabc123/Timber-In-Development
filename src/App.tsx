@@ -5,6 +5,8 @@ import { OnboardedRoute, ProtectedRoute, PublicOnlyRoute } from "@/components/Ro
 import Dashboard from "@/pages/Dashboard";
 import ForgotPassword from "@/pages/ForgotPassword";
 import Index from "@/pages/Index";
+import Interview from "@/pages/Interview";
+import InterviewResults from "@/pages/InterviewResults";
 import Login from "@/pages/Login";
 import Onboarding from "@/pages/Onboarding";
 import ResetPassword from "@/pages/ResetPassword";
@@ -27,6 +29,8 @@ export default function App() {
               <Route path="/onboarding" element={<Onboarding />} />
               <Route element={<OnboardedRoute />}>
                 <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/interview" element={<Interview />} />
+                <Route path="/interview/:id" element={<InterviewResults />} />
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />

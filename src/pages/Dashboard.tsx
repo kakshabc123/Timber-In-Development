@@ -2,14 +2,18 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { useProfile } from "@/contexts/ProfileContext";
+import type { InterviewSession } from "@/lib/interview";
 import { experienceLabel, RESUME_BUCKET } from "@/lib/onboarding";
 import { supabase } from "@/lib/supabase";
+
+type SessionSummary = Pick<InterviewSession, "id" | "target_role" | "status" | "overall_score" | "created_at">;
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const { profile } = useProfile();
   const navigate = useNavigate();
   const [resumeUrl, setResumeUrl] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
 
   const resumePath = profile?.resume_path ?? null;
 
@@ -20,6 +24,17 @@ export default function Dashboard() {
       .createSignedUrl(resumePath, 60 * 60)
       .then(({ data }) => setResumeUrl(data?.signedUrl ?? null));
   }, [resumePath]);
+
+  useEffect(() => {
+    if (!user) return;
+    supabase
+      .from("interview_sessions")
+      .select("id, target_role, status, overall_score, created_at")
+      .order("created_at", { ascending: false })
+      .limit(10)
+      .returns<SessionSummary[]>()
+      .then(({ data }) => setSessions(data ?? []));
+  }, [user]);
 
   async function handleSignOut() {
     await signOut();
@@ -43,6 +58,13 @@ export default function Dashboard() {
       <main className="mx-auto max-w-3xl px-6 py-16">
         <h1 className="font-display text-5xl">Hi, {displayName}</h1>
         <p className="mt-3 text-muted-foreground">Signed in as {user?.email}</p>
+
+        <Link
+          to="/interview"
+          className="mt-10 inline-flex rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+        >
+          Start pressure interview
+        </Link>
 
         <section className="mt-12 rounded-2xl border border-border bg-secondary/30 p-6">
           <div className="flex items-center justify-between">
@@ -77,6 +99,36 @@ export default function Dashboard() {
               </dd>
             </div>
           </dl>
+        </section>
+
+        <section className="mt-8 rounded-2xl border border-border bg-secondary/30 p-6">
+          <h2 className="text-xs uppercase tracking-[0.25em] text-muted-foreground">Recent interviews</h2>
+          {sessions === null ? (
+            <p className="mt-6 text-sm text-muted-foreground">Loading…</p>
+          ) : sessions.length === 0 ? (
+            <p className="mt-6 text-sm text-muted-foreground">No interviews yet. Your pressure scores will show up here.</p>
+          ) : (
+            <ul className="mt-4 divide-y divide-white/10">
+              {sessions.map((session) => (
+                <li key={session.id}>
+                  <Link
+                    to={`/interview/${session.id}`}
+                    className="flex items-center justify-between py-3 text-sm transition hover:text-foreground"
+                  >
+                    <span>
+                      {session.target_role}
+                      <span className="ml-3 text-muted-foreground">
+                        {new Date(session.created_at).toLocaleDateString()}
+                      </span>
+                    </span>
+                    <span className="font-display text-2xl">
+                      {session.status === "completed" ? session.overall_score : <span className="text-sm text-muted-foreground">Unfinished</span>}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       </main>
     </div>
