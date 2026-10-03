@@ -34,7 +34,7 @@ export default function Login() {
       subtitle="Log in to continue your interview training."
       footer={
         <>
-          New to Timber?{" "}
+          New to TimberVue?{" "}
           <Link to="/signup" className="text-foreground underline underline-offset-4">
             Create an account
           </Link>

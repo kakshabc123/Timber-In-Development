@@ -37,6 +37,17 @@ export function useSpeechRecognition(onFinal: (text: string) => void) {
     const Constructor = getRecognitionConstructor();
     if (!Constructor) return;
     const recognition = new Constructor();
+    const startRecognition = () => {
+      try {
+        recognition.start();
+      } catch {
+        if (recognitionRef.current !== recognition) return;
+        recognitionRef.current = null;
+        wantListeningRef.current = false;
+        setListening(false);
+        setError("Microphone could not start. Check browser permissions and try again.");
+      }
+    };
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
@@ -53,16 +64,16 @@ export function useSpeechRecognition(onFinal: (text: string) => void) {
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         wantListeningRef.current = false;
         setListening(false);
-        setError("Microphone access was blocked. Type your answers instead.");
+        setError("Microphone access was blocked. Allow it in browser settings, then try again.");
       }
     };
     recognition.onend = () => {
       if (recognitionRef.current !== recognition) return;
-      if (wantListeningRef.current) recognition.start();
+      if (wantListeningRef.current) startRecognition();
       else setListening(false);
     };
     recognitionRef.current = recognition;
-    recognition.start();
+    startRecognition();
   }, []);
 
   const start = useCallback(() => {

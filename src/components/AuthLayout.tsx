@@ -13,7 +13,7 @@ export function AuthLayout({ title, subtitle, children, footer }: AuthLayoutProp
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-4 py-12">
       <Link to="/" className="mb-10 font-display text-3xl tracking-tight">
-        Timber
+        TimberVue
       </Link>
       <div className="w-full max-w-sm rounded-2xl border border-border bg-secondary/40 p-8 backdrop-blur">
         <h1 className="font-display text-4xl leading-tight">{title}</h1>

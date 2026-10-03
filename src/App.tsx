@@ -6,6 +6,7 @@ import Dashboard from "@/pages/Dashboard";
 import ForgotPassword from "@/pages/ForgotPassword";
 import Index from "@/pages/Index";
 import Interview from "@/pages/Interview";
+import InterviewHistory from "@/pages/InterviewHistory";
 import InterviewResults from "@/pages/InterviewResults";
 import Login from "@/pages/Login";
 import Onboarding from "@/pages/Onboarding";
@@ -29,6 +30,7 @@ export default function App() {
               <Route path="/onboarding" element={<Onboarding />} />
               <Route element={<OnboardedRoute />}>
                 <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/history" element={<InterviewHistory />} />
                 <Route path="/interview" element={<Interview />} />
                 <Route path="/interview/:id" element={<InterviewResults />} />
               </Route>

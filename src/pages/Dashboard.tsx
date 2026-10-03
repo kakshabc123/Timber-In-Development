@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { useProfile } from "@/contexts/ProfileContext";
-import type { InterviewSession } from "@/lib/interview";
+import { SCORE_LABELS, type InterviewSession } from "@/lib/interview";
 import { experienceLabel, RESUME_BUCKET } from "@/lib/onboarding";
 import { supabase } from "@/lib/supabase";
 
-type SessionSummary = Pick<InterviewSession, "id" | "target_role" | "status" | "overall_score" | "created_at">;
+type SessionSummary = Pick<InterviewSession, "id" | "target_role" | "status" | "overall_score" | "scores" | "created_at">;
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();
@@ -29,7 +29,7 @@ export default function Dashboard() {
     if (!user) return;
     supabase
       .from("interview_sessions")
-      .select("id, target_role, status, overall_score, created_at")
+      .select("id, target_role, status, overall_score, scores, created_at")
       .order("created_at", { ascending: false })
       .limit(10)
       .returns<SessionSummary[]>()
@@ -43,11 +43,27 @@ export default function Dashboard() {
 
   const displayName =
     profile?.full_name ?? (user?.user_metadata.full_name as string | undefined) ?? user?.email;
+  const completedSessions = sessions?.filter(
+    (session) => session.status === "completed" && session.overall_score !== null,
+  ) ?? [];
+  const scoreHistory = completedSessions.slice(0, 8).reverse();
+  const averageScore = completedSessions.length
+    ? Math.round(completedSessions.reduce((total, session) => total + (session.overall_score ?? 0), 0) / completedSessions.length)
+    : null;
+  const categoryAverages = SCORE_LABELS.map(({ key, label }) => {
+    const values = completedSessions
+      .map((session) => session.scores?.[key])
+      .filter((score): score is number => score !== undefined && score !== null);
+    return { label, average: values.length ? values.reduce((total, score) => total + score, 0) / values.length : null };
+  });
+  const strongestArea = categoryAverages
+    .filter((category): category is typeof category & { average: number } => category.average !== null)
+    .sort((left, right) => right.average - left.average)[0];
 
   return (
     <div className="min-h-screen">
       <header className="flex items-center justify-between border-b border-border px-6 py-4">
-        <span className="font-display text-2xl">Timber</span>
+        <span className="font-display text-2xl">TimberVue</span>
         <button
           onClick={handleSignOut}
           className="rounded-full border border-border px-4 py-1.5 text-sm transition hover:bg-secondary"
@@ -102,7 +118,74 @@ export default function Dashboard() {
         </section>
 
         <section className="mt-8 rounded-2xl border border-border bg-secondary/30 p-6">
-          <h2 className="text-xs uppercase tracking-[0.25em] text-muted-foreground">Recent interviews</h2>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h2 className="text-xs uppercase tracking-[0.25em] text-muted-foreground">Your progress</h2>
+              <p className="mt-2 font-display text-3xl">Pressure score trend</p>
+            </div>
+            <Link to="/history" className="text-sm text-muted-foreground transition hover:text-foreground">
+              See all sessions
+            </Link>
+          </div>
+
+          {sessions === null ? (
+            <p className="mt-6 text-sm text-muted-foreground">Loading progress…</p>
+          ) : completedSessions.length === 0 ? (
+            <p className="mt-6 text-sm text-muted-foreground">Complete an interview to start tracking your progress.</p>
+          ) : (
+            <>
+              <dl className="mt-7 grid grid-cols-2 gap-5 border-y border-border py-5 sm:grid-cols-3">
+                <div>
+                  <dt className="text-xs text-muted-foreground">Recent completed</dt>
+                  <dd className="mt-1 font-display text-3xl">{completedSessions.length}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted-foreground">Recent average</dt>
+                  <dd className="mt-1 font-display text-3xl">{averageScore}<span className="ml-1 text-base text-muted-foreground">/ 100</span></dd>
+                </div>
+                <div className="col-span-2 sm:col-span-1">
+                  <dt className="text-xs text-muted-foreground">Top recent area</dt>
+                  <dd className="mt-1 font-display text-2xl">{strongestArea?.label ?? "Not scored yet"}</dd>
+                </div>
+              </dl>
+
+              <div className="mt-6">
+                <div className="flex h-40 items-end gap-2 border-b border-border px-1 sm:gap-4">
+                  {scoreHistory.map((session) => (
+                    <Link
+                      key={session.id}
+                      to={`/interview/${session.id}`}
+                      aria-label={`${session.target_role}, score ${session.overall_score}, ${new Date(session.created_at).toLocaleDateString()}`}
+                      title={`${session.target_role}: ${session.overall_score}/100`}
+                      className="group flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-2"
+                    >
+                      <span className="text-xs text-muted-foreground">{session.overall_score}</span>
+                      <span
+                        className="w-full max-w-10 rounded-t-sm bg-foreground/75 transition group-hover:bg-foreground"
+                        style={{ height: `${Math.max(session.overall_score ?? 0, 4)}%` }}
+                      />
+                    </Link>
+                  ))}
+                </div>
+                <div className="mt-2 flex gap-2 px-1 sm:gap-4">
+                  {scoreHistory.map((session) => (
+                    <span key={session.id} className="min-w-0 flex-1 truncate text-center text-[10px] text-muted-foreground">
+                      {new Date(session.created_at).toLocaleDateString(undefined, { month: "numeric", day: "numeric" })}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+
+        <section className="mt-8 rounded-2xl border border-border bg-secondary/30 p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs uppercase tracking-[0.25em] text-muted-foreground">Recent interviews</h2>
+            <Link to="/history" className="text-sm text-muted-foreground transition hover:text-foreground">
+              View history
+            </Link>
+          </div>
           {sessions === null ? (
             <p className="mt-6 text-sm text-muted-foreground">Loading…</p>
           ) : sessions.length === 0 ? (

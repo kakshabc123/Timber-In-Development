@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { FullScreenLoader } from "@/components/RouteGuards";
-import { SCORE_LABELS, type InterviewSession } from "@/lib/interview";
+import { LEGACY_SCORE_LABELS, SCORE_LABELS, type InterviewSession } from "@/lib/interview";
 import { supabase } from "@/lib/supabase";
 
 export default function InterviewResults() {
@@ -19,12 +19,13 @@ export default function InterviewResults() {
   }, [id]);
 
   if (session === undefined) return <FullScreenLoader />;
+  const scoreLabels = session?.scores?.fluency === undefined ? LEGACY_SCORE_LABELS : SCORE_LABELS;
 
   return (
     <div className="min-h-screen">
       <header className="flex items-center justify-between px-6 py-5 md:px-12">
         <Link to="/" className="font-display text-3xl tracking-tight">
-          Timber<sup className="text-xs">®</sup>
+          TimberVue<sup className="text-xs">®</sup>
         </Link>
         <Link to="/dashboard" className="text-sm text-muted-foreground transition hover:text-foreground">
           Dashboard
@@ -57,18 +58,26 @@ export default function InterviewResults() {
                 <span className="text-2xl text-muted-foreground"> / 100</span>
               </span>
               <div className="mt-8 flex flex-col gap-4 border-t border-white/10 pt-6">
-                {SCORE_LABELS.map(({ key, label }) => (
-                  <div key={key}>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">{label}</span>
-                      <span>{session.scores?.[key]}</span>
+                {scoreLabels.map(({ key, label }) => {
+                  const score = session.scores?.[key];
+                  return (
+                    <div key={key}>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">{label}</span>
+                        <span>{score ?? "—"}</span>
+                      </div>
+                      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/10">
+                        <div className="h-full rounded-full bg-foreground/70" style={{ width: `${score ?? 0}%` }} />
+                      </div>
                     </div>
-                    <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/10">
-                      <div className="h-full rounded-full bg-foreground/70" style={{ width: `${session.scores?.[key]}%` }} />
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+              {session.scores.fluency !== undefined && (
+                <p className="mt-5 text-xs text-muted-foreground">
+                  Fluency and confidence are estimated from the transcript; vocal tone is not analyzed.
+                </p>
+              )}
               {session.focus_area && (
                 <div className="mt-8 border-t border-white/10 pt-6">
                   <span className="text-[10px] tracking-[0.2em] text-muted-foreground">FOCUS AREA</span>

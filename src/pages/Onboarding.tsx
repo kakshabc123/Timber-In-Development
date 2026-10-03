@@ -111,7 +111,7 @@ function OnboardingFlow({ profile }: { profile: Profile | null }) {
     <div className="min-h-screen">
       <header className="flex items-center justify-between px-6 py-5 md:px-12">
         <Link to="/" className="font-display text-3xl tracking-tight">
-          Timber<sup className="text-xs">®</sup>
+          TimberVue<sup className="text-xs">®</sup>
         </Link>
         {profile?.onboarded_at ? (
           <Link to="/dashboard" className="text-sm text-muted-foreground transition hover:text-foreground">

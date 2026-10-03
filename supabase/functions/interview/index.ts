@@ -5,15 +5,16 @@ import mammoth from "npm:mammoth@1.8.0";
 
 const STAGES = [
   { label: "WARM UP", seconds: 30 },
-  { label: "INTERVIEW", seconds: 20 },
-  { label: "PRESSURE", seconds: 15 },
-  { label: "RAPID FIRE", seconds: 10 },
-  { label: "BOSS MODE", seconds: 5 },
+  { label: "INTERVIEW", seconds: 30 },
+  { label: "PRESSURE", seconds: 30 },
+  { label: "RAPID FIRE", seconds: 30 },
+  { label: "BOSS MODE", seconds: 30 },
 ];
 const QUESTIONS_PER_STAGE = 2;
 const TOTAL_QUESTIONS = STAGES.length * QUESTIONS_PER_STAGE;
 const MAX_ANSWER_CHARS = 2000;
 const MAX_RESUME_CHARS = 15000;
+const QUESTION_CATEGORIES = new Set(["behavioral", "technical", "situational", "resume"]);
 
 const EXPERIENCE_LABELS: Record<string, string> = {
   student: "student or intern",
@@ -115,17 +116,18 @@ async function loadResume(path: string | null, filename: string | null): Promise
   return [];
 }
 
-const START_PROMPT = `You are TIMBER, a sharp interviewer running a timed pressure interview.
+const START_PROMPT = `You are TimberVue, a sharp interviewer running a timed spoken interview.
 Write questions tailored to the candidate's target role, experience level and resume. When a resume is provided, reference specific projects, companies, or skills from it.
 Questions get progressively harder and must be answerable aloud within their time limit, so later questions must be shorter and sharper.
 Mix behavioral, technical, situational and resume deep-dive questions. Each question is a single sentence with no preamble or numbering.`;
 
-const FINISH_PROMPT = `You are TIMBER, grading a timed pressure interview. Answers were spoken (speech-to-text) or typed under a countdown, so ignore transcription typos and filler words, but judge clarity and structure.
-Score each answer 0-100 for how well it answers the question given its time limit. An empty answer scores 0.
+const FINISH_PROMPT = `You are TimberVue, grading a spoken interview from speech-to-text transcripts only. Tolerate likely transcription typos.
+Score each answer 0-100 for how well it answers the question. An empty answer scores 0.
 Then score the whole interview 0-100 on:
-- answer_quality: substance and correctness
-- communication: clarity, structure, getting to the point
-- technical: technical depth and accuracy relevant to the role
+- answer_quality: relevance, correctness, specificity and useful detail
+- fluency: coherent, well-paced wording with few visible disfluencies
+- confidence: direct language, specific examples and clear ownership; do not infer loudness or vocal tone
+Do not claim to assess acoustic qualities from text.
 feedback: one or two concise sentences per answer, addressed to the candidate as "you".
 focus_area: the single most important improvement, under 12 words.
 summary: two sentences on overall performance.`;
@@ -153,7 +155,7 @@ const QUESTIONS_SCHEMA = {
 const EVALUATION_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["answers", "answer_quality", "communication", "technical", "focus_area", "summary"],
+  required: ["answers", "fluency", "confidence", "answer_quality", "focus_area", "summary"],
   properties: {
     answers: {
       type: "array",
@@ -164,15 +166,34 @@ const EVALUATION_SCHEMA = {
         properties: { score: { type: "integer" }, feedback: { type: "string" } },
       },
     },
+    fluency: { type: "integer", minimum: 0, maximum: 100 },
+    confidence: { type: "integer", minimum: 0, maximum: 100 },
     answer_quality: { type: "integer" },
-    communication: { type: "integer" },
-    technical: { type: "integer" },
     focus_area: { type: "string" },
     summary: { type: "string" },
   },
 };
 
-async function startInterview(userId: string) {
+function parseLocalQuestions(raw: unknown): Question[] {
+  if (!Array.isArray(raw) || raw.length !== TOTAL_QUESTIONS) {
+    throw new HttpError(400, `Expected exactly ${TOTAL_QUESTIONS} locally generated questions.`);
+  }
+  return raw.map((item, index) => {
+    const stage = STAGES[Math.floor(index / QUESTIONS_PER_STAGE)];
+    if (
+      typeof item?.question !== "string" ||
+      !item.question.trim() ||
+      item.question.length > 500 ||
+      typeof item.category !== "string" ||
+      !QUESTION_CATEGORIES.has(item.category)
+    ) {
+      throw new HttpError(400, `Invalid local question ${index + 1}.`);
+    }
+    return { question: item.question.trim(), category: item.category, stage: stage.label, seconds: stage.seconds };
+  });
+}
+
+async function startInterview(userId: string, rawLocalQuestions?: unknown) {
   const { data: profile, error } = await admin
     .from("profiles")
     .select("target_role, experience_level, resume_path, resume_filename")
@@ -181,39 +202,44 @@ async function startInterview(userId: string) {
   if (error) throw new HttpError(500, error.message);
   if (!profile?.target_role) throw new HttpError(400, "Finish onboarding before starting an interview.");
 
-  const resume = await loadResume(profile.resume_path, profile.resume_filename);
+  const isLocal = rawLocalQuestions !== undefined;
+  const resume = isLocal ? [] : await loadResume(profile.resume_path, profile.resume_filename);
   const schedule = STAGES.map(
     (stage, i) =>
       `Questions ${i * QUESTIONS_PER_STAGE + 1}-${(i + 1) * QUESTIONS_PER_STAGE}: ${stage.seconds} seconds to answer`,
   ).join("\n");
 
-  const result = await openaiJson<{ questions: { question: string; category: string }[] }>(
-    START_PROMPT,
-    [
-      {
-        type: "text",
-        text: [
-          `Target role: ${profile.target_role}`,
-          `Experience: ${EXPERIENCE_LABELS[profile.experience_level ?? ""] ?? "unspecified"}`,
-          resume.length ? "The candidate's resume is attached." : "No resume is available; base questions on the role.",
-          `Write exactly ${TOTAL_QUESTIONS} questions in order.`,
-          schedule,
-        ].join("\n"),
-      },
-      ...resume,
-    ],
-    "interview_questions",
-    QUESTIONS_SCHEMA,
-  );
+  const questions: Question[] = isLocal
+    ? parseLocalQuestions(rawLocalQuestions)
+    : await (async () => {
+        const result = await openaiJson<{ questions: { question: string; category: string }[] }>(
+          START_PROMPT,
+          [
+            {
+              type: "text",
+              text: [
+                `Target role: ${profile.target_role}`,
+                `Experience: ${EXPERIENCE_LABELS[profile.experience_level ?? ""] ?? "unspecified"}`,
+                resume.length ? "The candidate's resume is attached." : "No resume is available; base questions on the role.",
+                `Write exactly ${TOTAL_QUESTIONS} questions in order.`,
+                schedule,
+              ].join("\n"),
+            },
+            ...resume,
+          ],
+          "interview_questions",
+          QUESTIONS_SCHEMA,
+        );
 
-  if (result.questions.length < TOTAL_QUESTIONS) {
-    throw new HttpError(502, "The AI interviewer didn't produce enough questions. Please try again.");
-  }
+        if (result.questions.length < TOTAL_QUESTIONS) {
+          throw new HttpError(502, "The AI interviewer didn't produce enough questions. Please try again.");
+        }
 
-  const questions: Question[] = result.questions.slice(0, TOTAL_QUESTIONS).map((q, i) => {
-    const stage = STAGES[Math.floor(i / QUESTIONS_PER_STAGE)];
-    return { question: q.question, category: q.category, stage: stage.label, seconds: stage.seconds };
-  });
+        return result.questions.slice(0, TOTAL_QUESTIONS).map((q, i) => {
+          const stage = STAGES[Math.floor(i / QUESTIONS_PER_STAGE)];
+          return { question: q.question, category: q.category, stage: stage.label, seconds: stage.seconds };
+        });
+      })();
 
   const { data: session, error: insertError } = await admin
     .from("interview_sessions")
@@ -240,12 +266,64 @@ function parseAnswers(raw: unknown, questions: Question[]): Answer[] {
   });
 }
 
-function responseSpeed(answers: Answer[], questions: Question[]) {
-  const perAnswer = answers.map((a, i) => (a.answer ? 100 - 60 * (a.seconds_used / questions[i].seconds) : 0));
-  return clampScore(perAnswer.reduce((sum, v) => sum + v, 0) / perAnswer.length);
+type Evaluation = {
+  answers: { score: number; feedback: string }[];
+  fluency: number;
+  confidence: number;
+  answer_quality: number;
+  focus_area: string;
+  summary: string;
+};
+
+function parseLocalEvaluation(raw: unknown, questionCount: number): Evaluation {
+  if (!raw || typeof raw !== "object") throw new HttpError(400, "A local evaluation is required.");
+  const candidate = raw as Record<string, unknown>;
+  if (!Array.isArray(candidate.answers) || candidate.answers.length !== questionCount) {
+    throw new HttpError(400, `Expected feedback for exactly ${questionCount} answers.`);
+  }
+
+  const score = (value: unknown, label: string) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new HttpError(400, `Invalid ${label} score in local evaluation.`);
+    }
+    return clampScore(value);
+  };
+
+  const feedback = candidate.answers.map((item, index) => {
+    if (!item || typeof item !== "object") throw new HttpError(400, `Invalid feedback for answer ${index + 1}.`);
+    const answerFeedback = item as Record<string, unknown>;
+    if (typeof answerFeedback.feedback !== "string") {
+      throw new HttpError(400, `Invalid feedback for answer ${index + 1}.`);
+    }
+    return {
+      score: score(answerFeedback.score, `answer ${index + 1}`),
+      feedback: answerFeedback.feedback.slice(0, 1000),
+    };
+  });
+
+  if (typeof candidate.focus_area !== "string") {
+    throw new HttpError(400, "Invalid focus area in local evaluation.");
+  }
+  if (typeof candidate.summary !== "string") {
+    throw new HttpError(400, "Invalid summary in local evaluation.");
+  }
+
+  return {
+    answers: feedback,
+    fluency: score(candidate.fluency, "fluency"),
+    confidence: score(candidate.confidence, "confidence"),
+    answer_quality: score(candidate.answer_quality, "answer quality"),
+    focus_area: candidate.focus_area.trim().slice(0, 200),
+    summary: candidate.summary.trim().slice(0, 2000),
+  };
 }
 
-async function finishInterview(userId: string, sessionId: unknown, rawAnswers: unknown) {
+async function finishInterview(
+  userId: string,
+  sessionId: unknown,
+  rawAnswers: unknown,
+  rawLocalEvaluation?: unknown,
+) {
   if (typeof sessionId !== "string") throw new HttpError(400, "session_id is required.");
 
   const { data: session, error } = await admin
@@ -268,24 +346,19 @@ async function finishInterview(userId: string, sessionId: unknown, rawAnswers: u
     )
     .join("\n\n");
 
-  const evaluation = await openaiJson<{
-    answers: { score: number; feedback: string }[];
-    answer_quality: number;
-    communication: number;
-    technical: number;
-    focus_area: string;
-    summary: string;
-  }>(
-    FINISH_PROMPT,
-    [
-      {
-        type: "text",
-        text: `Target role: ${session.target_role}\nExperience: ${EXPERIENCE_LABELS[session.experience_level ?? ""] ?? "unspecified"}\n\n${transcript}`,
-      },
-    ],
-    "interview_evaluation",
-    EVALUATION_SCHEMA,
-  );
+  const evaluation = rawLocalEvaluation !== undefined
+    ? parseLocalEvaluation(rawLocalEvaluation, questions.length)
+    : await openaiJson<Evaluation>(
+        FINISH_PROMPT,
+        [
+          {
+            type: "text",
+            text: `Target role: ${session.target_role}\nExperience: ${EXPERIENCE_LABELS[session.experience_level ?? ""] ?? "unspecified"}\n\n${transcript}`,
+          },
+        ],
+        "interview_evaluation",
+        EVALUATION_SCHEMA,
+      );
 
   const feedback = questions.map((_, i) => {
     const item = evaluation.answers[i];
@@ -296,14 +369,11 @@ async function finishInterview(userId: string, sessionId: unknown, rawAnswers: u
   });
 
   const scores = {
-    response_speed: responseSpeed(answers, questions),
+    fluency: clampScore(evaluation.fluency),
+    confidence: clampScore(evaluation.confidence),
     answer_quality: clampScore(evaluation.answer_quality),
-    communication: clampScore(evaluation.communication),
-    technical: clampScore(evaluation.technical),
   };
-  const overall = clampScore(
-    (scores.response_speed + scores.answer_quality + scores.communication + scores.technical) / 4,
-  );
+  const overall = clampScore((scores.fluency + scores.confidence + scores.answer_quality) / 3);
 
   const { data: updated, error: updateError } = await admin
     .from("interview_sessions")
@@ -337,6 +407,15 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     if (body.action === "start") return json(await startInterview(auth.user.id));
     if (body.action === "finish") return json(await finishInterview(auth.user.id, body.session_id, body.answers));
+    if (body.action === "start_local" || body.action === "finish_local") {
+      if (Deno.env.get("ALLOW_LOCAL_INTERVIEW_AI") !== "true") {
+        throw new HttpError(403, "Local interview AI is disabled for this Supabase project.");
+      }
+      if (body.action === "start_local") {
+        return json(await startInterview(auth.user.id, body.questions ?? null));
+      }
+      return json(await finishInterview(auth.user.id, body.session_id, body.answers, body.evaluation ?? null));
+    }
     throw new HttpError(400, "Unknown action.");
   } catch (err) {
     if (err instanceof HttpError) return json({ error: err.message }, err.status);

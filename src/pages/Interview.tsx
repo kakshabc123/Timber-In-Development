@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FormMessage } from "@/components/FormControls";
 import { useProfile } from "@/contexts/ProfileContext";
@@ -7,14 +7,15 @@ import {
   finishInterview,
   PRESSURE_STAGES,
   startInterview,
+  USE_LOCAL_INTERVIEW_AI,
   type InterviewAnswer,
   type InterviewSession,
 } from "@/lib/interview";
 import { experienceLabel } from "@/lib/onboarding";
 
-type Phase = "intro" | "starting" | "countdown" | "question" | "scoring" | "scoring-failed";
+type Phase = "intro" | "starting" | "reading" | "ready" | "question" | "scoring" | "scoring-failed";
 
-const COUNTDOWN_SECONDS = 3;
+const MAX_QUESTION_SKIPS = 3;
 
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err);
@@ -30,7 +31,7 @@ export default function Interview() {
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [remainingMs, setRemainingMs] = useState(0);
-  const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS);
+  const [skippedCount, setSkippedCount] = useState(0);
 
   const answersRef = useRef<InterviewAnswer[]>([]);
   const startedAtRef = useRef(0);
@@ -39,25 +40,32 @@ export default function Interview() {
   answerRef.current = answer;
 
   const appendTranscript = useCallback((text: string) => {
-    if (text) setAnswer((prev) => (prev ? `${prev} ${text}` : text));
+    if (text) setAnswer((prev) => `${prev ? `${prev} ` : ""}${text}`.slice(0, 2000));
   }, []);
   const speech = useSpeechRecognition(appendTranscript);
-  const { stop: stopSpeech, reset: resetSpeech } = speech;
+  const { stop: stopSpeech, start: startSpeech } = speech;
   const interimRef = useRef("");
   interimRef.current = speech.interim;
+  const speechOutputSupported =
+    typeof window !== "undefined" && "speechSynthesis" in window && typeof SpeechSynthesisUtterance !== "undefined";
+
+  useEffect(() => () => window.speechSynthesis?.cancel(), []);
 
   async function handleStart() {
     setError(null);
     setPhase("starting");
     try {
-      const next = await startInterview();
+      const next = await startInterview({
+        targetRole: profile?.target_role ?? "",
+        experienceLevel: profile?.experience_level ?? null,
+      });
       answersRef.current = [];
       submittedIndexRef.current = -1;
       setSession(next);
       setIndex(0);
       setAnswer("");
-      setCountdown(COUNTDOWN_SECONDS);
-      setPhase("countdown");
+      setSkippedCount(0);
+      setPhase("reading");
     } catch (err) {
       setError(errorMessage(err));
       setPhase("intro");
@@ -65,14 +73,27 @@ export default function Interview() {
   }
 
   useEffect(() => {
-    if (phase !== "countdown") return;
-    if (countdown === 0) {
-      setPhase("question");
-      return;
-    }
-    const id = setTimeout(() => setCountdown((value) => value - 1), 1000);
-    return () => clearTimeout(id);
-  }, [phase, countdown]);
+    if (phase !== "reading" || !session) return;
+    stopSpeech();
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(session.questions[index].question);
+    utterance.rate = 0.95;
+    utterance.onend = () => {
+      setPhase("ready");
+    };
+    utterance.onerror = () => {
+      setError("The question could not be read aloud. You can still read it on screen and answer by speaking.");
+      setPhase("ready");
+    };
+    window.speechSynthesis.speak(utterance);
+
+    return () => {
+      utterance.onend = null;
+      utterance.onerror = null;
+      window.speechSynthesis.cancel();
+    };
+  }, [phase, session, index, startSpeech, stopSpeech]);
 
   const scoreSession = useCallback(
     async (current: InterviewSession) => {
@@ -80,7 +101,7 @@ export default function Interview() {
       setError(null);
       setPhase("scoring");
       try {
-        const scored = await finishInterview(current.id, answersRef.current);
+        const scored = await finishInterview(current.id, answersRef.current, current.questions);
         navigate(`/interview/${scored.id}`, { replace: true });
       } catch (err) {
         setError(errorMessage(err));
@@ -103,10 +124,40 @@ export default function Interview() {
       void scoreSession(session);
       return;
     }
+    stopSpeech();
     setAnswer("");
-    resetSpeech();
     setIndex(index + 1);
-  }, [session, index, scoreSession, resetSpeech]);
+    setPhase("reading");
+  }, [session, index, scoreSession, stopSpeech]);
+
+  const startAnswering = useCallback(() => {
+    setError(null);
+    setPhase("question");
+    startSpeech();
+  }, [startSpeech]);
+
+  const skipQuestion = useCallback(() => {
+    if (!session || skippedCount >= MAX_QUESTION_SKIPS || submittedIndexRef.current === index) return;
+    submittedIndexRef.current = index;
+    const elapsed = phase === "question"
+      ? Math.min(session.questions[index].seconds, (performance.now() - startedAtRef.current) / 1000)
+      : 0;
+    answersRef.current = [
+      ...answersRef.current,
+      { answer: "", seconds_used: Math.round(elapsed * 10) / 10 },
+    ];
+    setSkippedCount((count) => count + 1);
+    stopSpeech();
+    window.speechSynthesis.cancel();
+
+    if (index + 1 >= session.questions.length) {
+      void scoreSession(session);
+      return;
+    }
+    setAnswer("");
+    setIndex(index + 1);
+    setPhase("reading");
+  }, [session, skippedCount, index, phase, stopSpeech, scoreSession]);
 
   const submitRef = useRef(submitAnswer);
   submitRef.current = submitAnswer;
@@ -129,17 +180,10 @@ export default function Interview() {
     return () => clearInterval(id);
   }, [phase, session, index]);
 
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      submitAnswer();
-    }
-  }
-
   const header = (
     <header className="flex items-center justify-between px-6 py-5 md:px-12">
       <Link to="/" className="font-display text-3xl tracking-tight">
-        Timber<sup className="text-xs">®</sup>
+        TimberVue<sup className="text-xs">®</sup>
       </Link>
       {(phase === "intro" || phase === "starting" || phase === "scoring-failed") && (
         <Link to="/dashboard" className="text-sm text-muted-foreground transition hover:text-foreground">
@@ -157,11 +201,15 @@ export default function Interview() {
           <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">Pressure interview</p>
           <h1 className="mt-4 font-display text-5xl leading-tight sm:text-6xl">Step into the room.</h1>
           <p className="mt-4 text-muted-foreground">
-            Ten questions built from your resume for{" "}
+            {USE_LOCAL_INTERVIEW_AI
+              ? "Ten questions generated locally for "
+              : "Ten questions built from your resume for "}
             <span className="text-foreground">{profile?.target_role ?? "your role"}</span>
-            {profile?.experience_level ? ` (${experienceLabel(profile.experience_level)})` : ""}. The clock gets
-            shorter as you go. When time runs out, your answer is submitted automatically.
+            {profile?.experience_level ? ` (${experienceLabel(profile.experience_level)})` : ""}. Speak your answers; each question has 30 seconds and submits automatically when time runs out.
           </p>
+          {USE_LOCAL_INTERVIEW_AI && (
+            <p className="mt-2 text-xs text-muted-foreground">Local model: {import.meta.env.VITE_OLLAMA_MODEL ?? "qwen2.5:7b"}</p>
+          )}
 
           <ol className="mt-10 grid grid-cols-5 gap-2">
             {PRESSURE_STAGES.map((stage, i) => (
@@ -177,10 +225,18 @@ export default function Interview() {
           </ol>
 
           <ul className="mt-8 space-y-2 text-sm text-muted-foreground">
-            <li>Answer out loud {speech.supported ? "with your mic" : "(voice works in Chrome)"} or type your answer.</li>
-            <li>Press Enter to submit early. Faster, clearer answers score higher.</li>
-            <li>You&apos;ll get a pressure score and feedback on every answer at the end.</li>
+            <li>Speaking is required; typed answers are not accepted.</li>
+            <li>Each question is read aloud; its 30-second timer starts after playback.</li>
+            <li>Submit early after speaking or skip up to three questions.</li>
+            <li>Your results score answer quality, speaking fluency, and confidence.</li>
+            <li>Fluency and confidence are estimated from the transcript, not vocal tone.</li>
           </ul>
+
+          {(!speech.supported || !speechOutputSupported) && (
+            <div className="mt-8">
+              <FormMessage type="error">Voice interviews require a browser with speech recognition, speech playback, and microphone access.</FormMessage>
+            </div>
+          )}
 
           {error && (
             <div className="mt-8">
@@ -190,21 +246,12 @@ export default function Interview() {
 
           <button
             onClick={() => void handleStart()}
-            disabled={phase === "starting"}
+            disabled={phase === "starting" || !speech.supported || !speechOutputSupported}
             className="mt-10 w-full rounded-full bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-wait disabled:opacity-60"
           >
             {phase === "starting" ? "Preparing your questions…" : "Begin interview"}
           </button>
         </main>
-      </div>
-    );
-  }
-
-  if (phase === "countdown") {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center text-center">
-        <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">First question in</p>
-        <span className="mt-6 font-display text-9xl">{countdown}</span>
       </div>
     );
   }
@@ -242,6 +289,48 @@ export default function Interview() {
   const limitMs = question.seconds * 1000;
   const urgent = remainingMs <= 3000;
 
+  if (phase === "reading" || phase === "ready") {
+    return (
+      <div className="min-h-screen">
+        {header}
+        <main className="mx-auto w-full max-w-2xl px-6 pb-16 pt-4">
+          <div className="flex items-center justify-between text-xs uppercase tracking-[0.25em] text-muted-foreground">
+            <span>{question.stage}</span>
+            <span>Question {index + 1} of {session.questions.length}</span>
+          </div>
+          <div className="mt-3 grid grid-cols-5 gap-1.5">
+            {PRESSURE_STAGES.map((stage, i) => (
+              <div key={stage.label} className={`h-1 rounded-full ${i <= stageIndex ? "bg-foreground" : "bg-white/10"}`} />
+            ))}
+          </div>
+          <p className="mt-16 text-xs uppercase tracking-[0.2em] text-muted-foreground">Reading question aloud</p>
+          <h1 className="mt-4 font-display text-4xl leading-snug">{question.question}</h1>
+          {phase === "reading" ? (
+            <p className="mt-4 text-sm text-muted-foreground">Your answer timer starts when you begin speaking.</p>
+          ) : (
+            <button
+              type="button"
+              onClick={startAnswering}
+              className="mt-8 rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              Start speaking · 30 seconds
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={skipQuestion}
+            disabled={skippedCount >= MAX_QUESTION_SKIPS}
+            className={`${phase === "ready" ? "ml-3" : "mt-10"} rounded-full border border-border px-5 py-2.5 text-sm transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50`}
+          >
+            {skippedCount >= MAX_QUESTION_SKIPS
+              ? "No skips remaining"
+              : `Skip question (${MAX_QUESTION_SKIPS - skippedCount} left)`}
+          </button>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen">
       {header}
@@ -268,6 +357,10 @@ export default function Interview() {
             <span className="text-xl text-muted-foreground">s</span>
           </span>
         </div>
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{question.category}</span>
+          <span className="text-xs text-muted-foreground">{MAX_QUESTION_SKIPS - skippedCount} skips left</span>
+        </div>
         <div className="mt-4 h-1 w-full overflow-hidden rounded-full bg-white/10">
           <div
             className={`h-full rounded-full ${urgent ? "bg-destructive" : "bg-foreground/70"}`}
@@ -275,19 +368,20 @@ export default function Interview() {
           />
         </div>
 
-        <textarea
-          key={index}
-          autoFocus
-          aria-label="Your answer"
-          value={answer}
-          onChange={(e) => setAnswer(e.target.value)}
-          onKeyDown={handleKeyDown}
-          rows={5}
-          maxLength={2000}
-          placeholder={speech.listening ? "Listening… speak your answer" : "Type your answer"}
-          className="mt-8 w-full resize-none rounded-2xl border border-input bg-background/60 px-4 py-3 text-base placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-        />
-        {speech.interim && <p className="mt-2 text-sm italic text-muted-foreground">{speech.interim}</p>}
+        <div
+          aria-live="polite"
+          aria-label="Recognized spoken answer"
+          className="mt-8 min-h-36 rounded-2xl border border-input bg-background/60 px-4 py-4 text-base"
+        >
+          {answer || speech.interim ? (
+            <>
+              <span>{answer}</span>
+              {speech.interim && <span className="italic text-muted-foreground">{answer ? " " : ""}{speech.interim}</span>}
+            </>
+          ) : (
+            <span className="text-muted-foreground">Your spoken answer will appear here.</span>
+          )}
+        </div>
         {speech.error && (
           <div className="mt-3">
             <FormMessage type="error">{speech.error}</FormMessage>
@@ -295,26 +389,33 @@ export default function Interview() {
         )}
 
         <div className="mt-6 flex items-center gap-3">
-          {speech.supported && (
-            <button
-              type="button"
-              onClick={speech.listening ? speech.stop : speech.start}
-              aria-pressed={speech.listening}
-              className={`rounded-full border px-5 py-2.5 text-sm transition ${
-                speech.listening
-                  ? "border-destructive/60 bg-destructive/10 text-destructive"
-                  : "border-border hover:bg-secondary"
-              }`}
-            >
-              {speech.listening ? "● Mic on" : "🎙 Speak your answer"}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={speech.listening ? speech.stop : speech.start}
+            aria-pressed={speech.listening}
+            className={`rounded-full border px-5 py-2.5 text-sm transition ${
+              speech.listening
+                ? "border-destructive/60 bg-destructive/10 text-destructive"
+                : "border-border hover:bg-secondary"
+            }`}
+          >
+            {speech.listening ? "Stop microphone" : "Start speaking"}
+          </button>
           <button
             type="button"
             onClick={submitAnswer}
-            className="ml-auto rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            disabled={!answer.trim() && !speech.interim}
+            className="ml-auto rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {index + 1 === session.questions.length ? "Finish" : "Submit answer"}
+            {index + 1 === session.questions.length ? "Finish interview" : "Submit early"}
+          </button>
+          <button
+            type="button"
+            onClick={skipQuestion}
+            disabled={skippedCount >= MAX_QUESTION_SKIPS}
+            className="rounded-full border border-border px-5 py-2.5 text-sm transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {skippedCount >= MAX_QUESTION_SKIPS ? "Skip limit reached" : "Skip question"}
           </button>
         </div>
       </main>
